@@ -1686,68 +1686,47 @@ async def triggerlist(interaction: discord.Interaction):
     await view.load_page()
     await interaction.response.send_message(embed=view.get_embed(), view=view, ephemeral=True)
 
-# Add this class near the bottom of the file
-class KeepAliveHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header("Content-type", "text/plain")
-        self.end_headers()
-        self.wfile.write(b"Bot is running.")
-
-    def log_message(self, format, *args):
-        # Suppress logging to avoid console spam
-        pass
-
-# Replace the run_dummy_server function with this version
+# Replace the dummy server code with this simpler version
 def run_dummy_server():
-    """Run a dummy server to satisfy Render's port requirement"""
+    """Run a simple TCP server to satisfy Render's port requirement"""
     port = int(os.environ.get("PORT", 10000))
-    retries = 5
     
-    for attempt in range(retries):
-        try:
-            # Test if port is available
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.bind(("0.0.0.0", port))
-                s.listen(1)
-                print(f"Port {port} is available")
-            
-            # Start the actual server
-            server = HTTPServer(("0.0.0.0", port), KeepAliveHandler)
-            print(f"Dummy web server running on port {port}")
-            return server  # Return the server instance
-            
-        except Exception as e:
-            print(f"Attempt {attempt + 1}/{retries}: Error starting server: {e}")
-            if attempt < retries - 1:
-                time.sleep(2)  # Wait before retrying
-            else:
-                raise
-
-# Replace the server startup code with this version
-if os.environ.get("IS_RENDER"):
-    print("Starting dummy web server for Render...")
     try:
-        server = run_dummy_server()
-        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
-        server_thread.start()
-        print("Dummy server thread started successfully")
+        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server.bind(('0.0.0.0', port))
+        server.listen(1)
+        print(f"TCP Server listening on port {port}")
         
-        # Wait a moment to ensure the server is running
-        time.sleep(2)
-        
-        # Test the server
-        try:
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                port = int(os.environ.get("PORT", 10000))
-                s.connect(("localhost", port))
-                print(f"Successfully connected to port {port}")
-        except Exception as e:
-            print(f"Warning: Could not verify server: {e}")
-            
+        while True:
+            try:
+                client, addr = server.accept()
+                client.send(b"Bot is running\n")
+                client.close()
+            except:
+                pass
+                
     except Exception as e:
-        print(f"Critical: Failed to start dummy server: {e}")
-        # Continue anyway - the bot is more important
+        print(f"Server error: {e}")
+        # Don't raise - let the bot continue
+
+# Start the server before running the bot
+if os.environ.get("IS_RENDER"):
+    print("Starting TCP server for Render...")
+    server_thread = threading.Thread(target=run_dummy_server, daemon=True)
+    server_thread.start()
+    
+    # Wait a moment to ensure the server starts
+    time.sleep(2)
+    
+    # Test the connection
+    try:
+        test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        test_socket.connect(('localhost', int(os.environ.get("PORT", 10000))))
+        test_socket.close()
+        print("TCP Server is running!")
+    except Exception as e:
+        print(f"Warning: Could not verify server: {e}")
 
 # Run the bot
 bot.run(TOKEN) 
