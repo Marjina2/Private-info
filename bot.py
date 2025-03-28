@@ -37,6 +37,8 @@ from fpdf import FPDF
 import io
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
+import socket
+import time
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -1696,23 +1698,56 @@ class KeepAliveHandler(BaseHTTPRequestHandler):
         # Suppress logging to avoid console spam
         pass
 
-# Update the run_dummy_server function
+# Replace the run_dummy_server function with this version
 def run_dummy_server():
     """Run a dummy server to satisfy Render's port requirement"""
-    try:
-        port = int(os.environ.get("PORT", 10000))
-        server = HTTPServer(("0.0.0.0", port), KeepAliveHandler)
-        print(f"Dummy web server running on port {port}")
-        server.serve_forever()
-    except Exception as e:
-        print(f"Error starting dummy server: {e}")
+    port = int(os.environ.get("PORT", 10000))
+    retries = 5
+    
+    for attempt in range(retries):
+        try:
+            # Test if port is available
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind(("0.0.0.0", port))
+                s.listen(1)
+                print(f"Port {port} is available")
+            
+            # Start the actual server
+            server = HTTPServer(("0.0.0.0", port), KeepAliveHandler)
+            print(f"Dummy web server running on port {port}")
+            return server  # Return the server instance
+            
+        except Exception as e:
+            print(f"Attempt {attempt + 1}/{retries}: Error starting server: {e}")
+            if attempt < retries - 1:
+                time.sleep(2)  # Wait before retrying
+            else:
+                raise
 
-# Start the server before running the bot
+# Replace the server startup code with this version
 if os.environ.get("IS_RENDER"):
     print("Starting dummy web server for Render...")
-    server_thread = threading.Thread(target=run_dummy_server, daemon=True)
-    server_thread.start()
-    print("Dummy server thread started")
+    try:
+        server = run_dummy_server()
+        server_thread = threading.Thread(target=server.serve_forever, daemon=True)
+        server_thread.start()
+        print("Dummy server thread started successfully")
+        
+        # Wait a moment to ensure the server is running
+        time.sleep(2)
+        
+        # Test the server
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                port = int(os.environ.get("PORT", 10000))
+                s.connect(("localhost", port))
+                print(f"Successfully connected to port {port}")
+        except Exception as e:
+            print(f"Warning: Could not verify server: {e}")
+            
+    except Exception as e:
+        print(f"Critical: Failed to start dummy server: {e}")
+        # Continue anyway - the bot is more important
 
-# Keep your existing bot.run(TOKEN) line
+# Run the bot
 bot.run(TOKEN) 
