@@ -3,9 +3,8 @@ services:
     name: private-info-bot
     env: docker
     plan: free
+    region: ohio
     dockerfilePath: ./Dockerfile
-    buildCommand: ""
-    startCommand: "python bot.py"
     envVars:
       - key: TOKEN
         sync: false
@@ -16,6 +15,4 @@ services:
       - key: SUPABASE_KEY
         sync: false
       - key: HENRIK_API_KEY
-        sync: false
-      - key: IS_WORKER
-        value: "true" 
+        sync: false 
