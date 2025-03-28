@@ -35,11 +35,6 @@ import aiohttp  # Add this to your imports
 import google.generativeai as genai
 from fpdf import FPDF
 import io
-import wavelink
-import spotipy
-from spotipy.oauth2 import SpotifyClientCredentials
-from urllib.parse import urlparse, parse_qs
-from music_player import MusicPlayer
 from music_commands import setup_music_commands
 
 # Setup logging
@@ -70,8 +65,7 @@ class PrivateBot(commands.Bot):
             intents=intents,
             application_id=1355108574245814393
         )
-        self.music = MusicPlayer(self)
-        self.gemini_sessions = {}  # Add this line
+        self.gemini_sessions = {}
 
     async def setup_hook(self):
         print("Loading settings from Supabase...")
@@ -86,53 +80,13 @@ class PrivateBot(commands.Bot):
             
             print("Settings loaded successfully!")
             
-            # Try to initialize wavelink node with a timeout
-            try:
-                node = wavelink.Node(
-                    uri='http://127.0.0.1:2333',
-                    password='youshallnotpass'
-                )
-                
-                # Try to connect with a 5 second timeout
-                async with asyncio.timeout(5):
-                    await wavelink.NodePool.connect(client=self, nodes=[node])
-                    print("Successfully connected to Lavalink")
-                    
-                    # Only setup music commands if Lavalink connects
-                    setup_music_commands(self)
-                    
-            except Exception as e:  # Simplified error handling
-                print(f"Lavalink connection failed: {e}")
-                print("Music features will be disabled")
-
-            # Register all commands - MOVED OUTSIDE OF LAVALINK TRY/EXCEPT
+            # Register commands
             print("Setting up commands...")
             try:
-                # Make sure dcsearch is registered before syncing
-                @self.tree.command(
-                    name="dcsearch",
-                    description="Search for a Discord user's information"
-                )
-                async def dcsearch(interaction: discord.Interaction):
-                    if interaction.user.id not in settings.get("allowed_users"):
-                        await unauthorized_message(interaction)
-                        return
-                    
-                    modal = UserSearchModal()
-                    await interaction.response.send_modal(modal)
-
-                # Sync all commands
                 commands = await self.tree.sync()
                 print(f"Successfully synced {len(commands)} commands!")
-            except discord.HTTPException as e:
-                if e.status == 429:
-                    retry_after = e.retry_after
-                    print(f"Rate limited. Waiting {retry_after:.2f} seconds...")
-                    await asyncio.sleep(retry_after)
-                    commands = await self.tree.sync()
-                    print(f"Successfully synced {len(commands)} commands after rate limit!")
-                else:
-                    print(f"Error syncing commands: {e}")
+            except Exception as e:
+                print(f"Error syncing commands: {e}")
                 
         except Exception as e:
             print(f"Error in setup: {e}")
@@ -146,19 +100,6 @@ async def on_ready():
     print(f'{bot.user} has connected to Discord!')
     await bot.change_presence(activity=discord.Game(name="Serving Shiraken12T"))
     print("Bot is ready!")
-
-@bot.event
-async def on_wavelink_track_start(player, track):
-    print(f"Started playing: {track.title}")
-    await player.set_volume(100)
-
-@bot.event
-async def on_wavelink_track_end(player, track, reason):
-    print(f"Finished playing: {track.title} (Reason: {reason})")
-
-@bot.event
-async def on_wavelink_node_ready(node: wavelink.Node):
-    print(f'Node is ready!')
 
 @bot.event
 async def on_guild_join(guild: discord.Guild):
