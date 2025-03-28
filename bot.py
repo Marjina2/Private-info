@@ -35,7 +35,6 @@ import aiohttp  # Add this to your imports
 import google.generativeai as genai
 from fpdf import FPDF
 import io
-from music_commands import setup_music_commands
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -44,7 +43,6 @@ logging.basicConfig(level=logging.INFO)
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
-intents.voice_states = True
 intents.presences = True  # Add this for status/activity info
 
 settings = Settings()
