@@ -36,7 +36,7 @@ import google.generativeai as genai
 from fpdf import FPDF
 import io
 import threading
-from http.server import SimpleHTTPRequestHandler, HTTPServer
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -1684,18 +1684,35 @@ async def triggerlist(interaction: discord.Interaction):
     await view.load_page()
     await interaction.response.send_message(embed=view.get_embed(), view=view, ephemeral=True)
 
-# Add this function near the bottom of the file, before bot.run(TOKEN)
+# Add this class near the bottom of the file
+class KeepAliveHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"Bot is running.")
+
+    def log_message(self, format, *args):
+        # Suppress logging to avoid console spam
+        pass
+
+# Update the run_dummy_server function
 def run_dummy_server():
     """Run a dummy server to satisfy Render's port requirement"""
-    port = int(os.environ.get("PORT", 10000))
-    server = HTTPServer(("0.0.0.0", port), SimpleHTTPRequestHandler)
-    print(f"Dummy web server running on port {port}")
-    server.serve_forever()
+    try:
+        port = int(os.environ.get("PORT", 10000))
+        server = HTTPServer(("0.0.0.0", port), KeepAliveHandler)
+        print(f"Dummy web server running on port {port}")
+        server.serve_forever()
+    except Exception as e:
+        print(f"Error starting dummy server: {e}")
 
-# Add this right before bot.run(TOKEN)
+# Start the server before running the bot
 if os.environ.get("IS_RENDER"):
     print("Starting dummy web server for Render...")
-    threading.Thread(target=run_dummy_server, daemon=True).start()
+    server_thread = threading.Thread(target=run_dummy_server, daemon=True)
+    server_thread.start()
+    print("Dummy server thread started")
 
 # Keep your existing bot.run(TOKEN) line
 bot.run(TOKEN) 
