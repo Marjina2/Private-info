@@ -1,8 +1,6 @@
 discord.py>=2.3.2
 python-dotenv>=1.0.0
 requests>=2.31.0
-wavelink>=3.0.0
-spotipy>=2.23.0
 google-generativeai>=0.3.2
 fpdf>=1.7.2
 supabase>=2.3.4 
