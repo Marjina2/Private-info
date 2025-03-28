@@ -1,5 +1,18 @@
+# Environment variables
 .env
+
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
+*$py.class
+
+# Logs
+logs/
+*.log
+
+# IDE
+.vscode/
+.idea/
+
 notes.json
 settings.json 

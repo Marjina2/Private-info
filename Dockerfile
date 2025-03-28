@@ -10,5 +10,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy bot files
 COPY . .
 
+# Set environment variable to indicate this is a worker
+ENV IS_WORKER=true
+
 # Start the bot
-CMD ["python", "bot.py"] 
+ENTRYPOINT ["python", "bot.py"] 

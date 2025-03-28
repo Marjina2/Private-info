@@ -4,6 +4,8 @@ services:
     env: docker
     plan: free
     dockerfilePath: ./Dockerfile
+    buildCommand: ""
+    startCommand: "python bot.py"
     envVars:
       - key: TOKEN
         sync: false
@@ -14,4 +16,6 @@ services:
       - key: SUPABASE_KEY
         sync: false
       - key: HENRIK_API_KEY
-        sync: false 
+        sync: false
+      - key: IS_WORKER
+        value: "true" 

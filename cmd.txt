@@ -113,3 +113,5 @@ Notes:
 - The bot will automatically reject commands from unauthorized users
 - User IDs are required for adding/removing allowed users
 - All notes are stored privately and can only be accessed by allowed users 
+
+python bot.py 
