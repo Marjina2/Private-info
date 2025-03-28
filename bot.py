@@ -35,6 +35,8 @@ import aiohttp  # Add this to your imports
 import google.generativeai as genai
 from fpdf import FPDF
 import io
+import threading
+from http.server import SimpleHTTPRequestHandler, HTTPServer
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -1682,5 +1684,18 @@ async def triggerlist(interaction: discord.Interaction):
     await view.load_page()
     await interaction.response.send_message(embed=view.get_embed(), view=view, ephemeral=True)
 
-# Run the bot at the very end
+# Add this function near the bottom of the file, before bot.run(TOKEN)
+def run_dummy_server():
+    """Run a dummy server to satisfy Render's port requirement"""
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), SimpleHTTPRequestHandler)
+    print(f"Dummy web server running on port {port}")
+    server.serve_forever()
+
+# Add this right before bot.run(TOKEN)
+if os.environ.get("IS_RENDER"):
+    print("Starting dummy web server for Render...")
+    threading.Thread(target=run_dummy_server, daemon=True).start()
+
+# Keep your existing bot.run(TOKEN) line
 bot.run(TOKEN) 

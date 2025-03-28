@@ -1,5 +1,5 @@
 services:
-  - type: worker
+  - type: web
     name: private-info-bot
     env: docker
     plan: free
@@ -15,4 +15,8 @@ services:
       - key: SUPABASE_KEY
         sync: false
       - key: HENRIK_API_KEY
-        sync: false 
+        sync: false
+      - key: PORT
+        value: "10000"
+      - key: IS_RENDER
+        value: "true" 
