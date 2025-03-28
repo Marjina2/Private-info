@@ -1,0 +1,28 @@
+server:
+  port: 2333
+  address: 127.0.0.1
+spring:
+  main:
+    banner-mode: log
+lavalink:
+  server:
+    password: "youshallnotpass"
+    sources:
+      youtube: true
+      bandcamp: true
+      soundcloud: true
+      twitch: true
+      vimeo: true
+      http: true
+    filters:
+      volume: true
+      equalizer: true
+    bufferDurationMs: 400
+    youtubePlaylistLoadLimit: 6
+    playerUpdateInterval: 5
+    youtubeSearchEnabled: true
+    soundcloudSearchEnabled: true
+    gc-warnings: true
+
+plugins:
+  - dependency: "https://github.com/TopiSenpai/Lavalink-YouTube-Source/releases/latest/download/Lavalink-YouTube-Source.jar"
