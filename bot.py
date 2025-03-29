@@ -41,9 +41,6 @@ import io
 import random
 from memes import MEME_TEMPLATES, get_random_templates
 from urllib.parse import quote
-from bs4 import BeautifulSoup
-import re
-from urllib.parse import urljoin
 import yt_dlp
 import telegram
 from telegram.error import TelegramError
@@ -71,9 +68,6 @@ VALORANT_REGIONS = ['eu', 'na', 'ap', 'kr', 'latam', 'br']
 # Add this near your other imports
 LEONARDO_API_KEY = os.getenv("LEONARDO_API_KEY")  # Add this to your .env file
 STABILITY_API_KEY = os.getenv("STABILITY_API_KEY")  # Add this to your .env file
-
-# Add your TMDB API key to .env file
-TMDB_API_KEY = os.getenv("TMDB_API_KEY")
 
 # Add these streaming services to check
 STREAMING_SERVICES = {
@@ -2900,121 +2894,6 @@ async def meme(interaction: discord.Interaction):
         ephemeral=True
     )
 
-class MovieView(discord.ui.View):
-    def __init__(self, movie_data: list):
-        super().__init__(timeout=300)
-        self.current = 0
-        self.movies = movie_data
-
-    @discord.ui.button(label="Previous", style=discord.ButtonStyle.secondary, emoji="⬅️")
-    async def prev_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.current = (self.current - 1) % len(self.movies)
-        await self.update_movie(interaction)
-
-    @discord.ui.button(label="More Info", style=discord.ButtonStyle.primary, emoji="🎬")
-    async def info_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        movie = self.movies[self.current]
-        tmdb_url = f"https://www.themoviedb.org/movie/{movie['id']}"
-        await interaction.response.send_message(f"View more details at: {tmdb_url}", ephemeral=True)
-
-    @discord.ui.button(label="Next", style=discord.ButtonStyle.secondary, emoji="➡️")
-    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.current = (self.current + 1) % len(self.movies)
-        await self.update_movie(interaction)
-
-    async def update_movie(self, interaction: discord.Interaction):
-        movie = self.movies[self.current]
-        
-        embed = discord.Embed(
-            title=f"🎬 {movie['title']} ({movie['release_date'][:4]})",
-            description=movie['overview'],
-            color=discord.Color.blue()
-        )
-        
-        if movie['poster_path']:
-            embed.set_image(url=f"https://image.tmdb.org/t/p/w500{movie['poster_path']}")
-        
-        embed.add_field(
-            name="Rating",
-            value=f"⭐ {movie['vote_average']}/10",
-            inline=True
-        )
-        embed.add_field(
-            name="Votes",
-            value=f"👥 {movie['vote_count']}",
-            inline=True
-        )
-        
-        embed.set_footer(text=f"Movie {self.current + 1}/{len(self.movies)} • Click 'More Info' for details")
-        
-        await interaction.response.edit_message(embed=embed, view=self)
-
-@bot.tree.command(
-    name="searchmovie",
-    description="Search for a movie across streaming sites"
-)
-async def searchmovie(interaction: discord.Interaction, movie: str):
-    """Search for movie streaming links"""
-    if interaction.user.id not in settings.get("allowed_users"):
-        await unauthorized_message(interaction)
-        return
-
-    await interaction.response.defer()
-
-    try:
-        embed = discord.Embed(
-            title=f"🎬 Search results for: {movie}",
-            description="Searching for streaming links...",
-            color=discord.Color.blue()
-        )
-
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
-        }
-
-        async with aiohttp.ClientSession(headers=headers) as session:
-            for site_name, site_info in MOVIE_SITES.items():
-                try:
-                    search_url = site_info["url"].format(quote(movie))
-                    async with session.get(search_url) as response:
-                        if response.status == 200:
-                            html = await response.text()
-                            soup = BeautifulSoup(html, 'html.parser')
-                            
-                            # Find movie items using the site's selectors
-                            movies = soup.select(site_info["movie_selector"])
-                            if movies:
-                                movie_item = movies[0]  # Get first result
-                                title = movie_item.select_one(site_info["title_selector"]).text.strip()
-                                link = movie_item.select_one(site_info["link_selector"])["href"]
-                                if not link.startswith("http"):
-                                    link = urljoin(search_url, link)
-                                
-                                embed.add_field(
-                                    name=f"{site_name}",
-                                    value=f"[{title}]({link})",
-                                    inline=False
-                                )
-                except Exception as e:
-                    print(f"Error searching {site_name}: {e}")
-                    continue
-
-        if len(embed.fields) > 0:
-            embed.set_footer(text="⚠️ Please verify links before using them")
-            await interaction.followup.send(embed=embed, ephemeral=True)
-        else:
-            await interaction.followup.send(
-                "❌ No streaming links found. Try another movie title.",
-                ephemeral=True
-            )
-
-    except Exception as e:
-        print(f"Error searching movie: {e}")
-        await interaction.followup.send(
-            "❌ An error occurred while searching. Please try again.",
-            ephemeral=True
-        )
-
 class YoutubeModal(discord.ui.Modal):
     def __init__(self):
         super().__init__(title="YouTube Downloader")
@@ -3389,7 +3268,6 @@ async def help_command(interaction: discord.Interaction):
 • Auto-uploads large videos to Telegram
 • Supports MP4/MP3/Thumbnail download
 
-`/movie` - Search for movies and streaming links
 `/meme` - Create custom memes from templates
 """
     embed.add_field(name="🎬 Media", value=media, inline=False)
