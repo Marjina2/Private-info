@@ -35,29 +35,10 @@ from database import (
     is_blacklisted,
     get_blacklist
 )
-import aiohttp  # Add this to your imports
+import aiohttp
 import google.generativeai as genai
-from fpdf import FPDF
 import io
-import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
-import socket
-import time
-from PIL import Image
-from docx import Document  # python-docx for Word documents
-import pypdf  # For PDF operations
-import csv
-import markdown
-import html2text
-import mammoth  # For DOCX to HTML/text
-import comtypes.client  # Added import for Word COM interface
-from reportlab.pdfgen import canvas
-from reportlab.lib.pagesizes import letter
-from docx.shared import Inches
-import docx
-import base64
 import random
-import urllib.parse
 from memes import MEME_TEMPLATES, get_random_templates
 from urllib.parse import quote
 from bs4 import BeautifulSoup
