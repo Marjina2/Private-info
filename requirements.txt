@@ -10,4 +10,7 @@ pypdf>=3.7.1
 markdown>=3.3.7
 html2text>=2020.1.16
 mammoth>=1.6.0
-reportlab>=4.1.0 
+reportlab>=4.1.0
+python-telegram-bot
+yt-dlp
+aiohttp 
