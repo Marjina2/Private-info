@@ -44,6 +44,8 @@ from urllib.parse import quote
 import yt_dlp
 import telegram
 from telegram.error import TelegramError
+from flask import Flask
+from threading import Thread
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -3567,5 +3569,25 @@ async def fakenitro(interaction: discord.Interaction):
 
     await interaction.response.send_message(embed=embed)
 
-# Run the bot
-bot.run(TOKEN) 
+# Add these imports at the top
+from flask import Flask
+from threading import Thread
+
+# Add this after your bot setup but before bot.run()
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "Bot is alive!"
+
+def run():
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
+
+def keep_alive():
+    t = Thread(target=run)
+    t.start()
+
+# Modify the bottom of your file to:
+if __name__ == "__main__":
+    keep_alive()    # Start the web server in a background thread
+    bot.run(TOKEN)  # Then run the bot
