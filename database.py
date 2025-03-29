@@ -4,6 +4,7 @@ from datetime import datetime
 from dotenv import load_dotenv
 import json
 from config import OWNER_ID
+from typing import List, Dict
 
 # Load environment variables
 load_dotenv()
@@ -237,4 +238,44 @@ async def update_trigger(trigger_id: int, name: str, response: str) -> bool:
         return True
     except Exception as e:
         print(f"Error updating trigger: {e}")
-        return False 
+        return False
+
+async def add_to_blacklist(user_id: int, reason: str = "Unauthorized action") -> bool:
+    """Add a user to the blacklist"""
+    try:
+        response = supabase.table('blacklist').insert({
+            'user_id': user_id,
+            'reason': reason,
+            'timestamp': datetime.now().isoformat()
+        }).execute()
+        return True
+    except Exception as e:
+        print(f"Error adding user to blacklist: {e}")
+        return False
+
+async def remove_from_blacklist(user_id: int) -> bool:
+    """Remove a user from the blacklist"""
+    try:
+        response = supabase.table('blacklist').delete().eq('user_id', user_id).execute()
+        return True
+    except Exception as e:
+        print(f"Error removing user from blacklist: {e}")
+        return False
+
+async def is_blacklisted(user_id: int) -> bool:
+    """Check if a user is blacklisted"""
+    try:
+        response = supabase.table('blacklist').select('user_id').eq('user_id', user_id).execute()
+        return len(response.data) > 0
+    except Exception as e:
+        print(f"Error checking blacklist: {e}")
+        return False
+
+async def get_blacklist() -> List[Dict]:
+    """Get all blacklisted users"""
+    try:
+        response = supabase.table('blacklist').select('*').execute()
+        return response.data
+    except Exception as e:
+        print(f"Error getting blacklist: {e}")
+        return [] 

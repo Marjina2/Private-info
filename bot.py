@@ -9,7 +9,7 @@ from settings import Settings
 import asyncio
 import logging
 import requests
-from typing import List, Dict
+from typing import List, Dict, Optional, Literal
 from discord.ui import Button, View
 from database import (
     log_unauthorized_access, 
@@ -29,7 +29,11 @@ from database import (
     save_trigger,
     get_triggers,
     delete_trigger,
-    update_trigger
+    update_trigger,
+    add_to_blacklist,
+    remove_from_blacklist,
+    is_blacklisted,
+    get_blacklist
 )
 import aiohttp  # Add this to your imports
 import google.generativeai as genai
@@ -39,6 +43,29 @@ import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import socket
 import time
+from PIL import Image
+from docx import Document  # python-docx for Word documents
+import pypdf  # For PDF operations
+import csv
+import markdown
+import html2text
+import mammoth  # For DOCX to HTML/text
+import comtypes.client  # Added import for Word COM interface
+from reportlab.pdfgen import canvas
+from reportlab.lib.pagesizes import letter
+from docx.shared import Inches
+import docx
+import base64
+import random
+import urllib.parse
+from memes import MEME_TEMPLATES, get_random_templates
+from urllib.parse import quote
+from bs4 import BeautifulSoup
+import re
+from urllib.parse import urljoin
+import yt_dlp
+import telegram
+from telegram.error import TelegramError
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -59,6 +86,63 @@ HEADERS = {
 
 # Add this constant with the regions
 VALORANT_REGIONS = ['eu', 'na', 'ap', 'kr', 'latam', 'br']
+
+# Add this near your other imports
+LEONARDO_API_KEY = os.getenv("LEONARDO_API_KEY")  # Add this to your .env file
+STABILITY_API_KEY = os.getenv("STABILITY_API_KEY")  # Add this to your .env file
+
+# Add your TMDB API key to .env file
+TMDB_API_KEY = os.getenv("TMDB_API_KEY")
+
+# Add these streaming services to check
+STREAMING_SERVICES = {
+    "Netflix": "https://www.netflix.com/search?q={}",
+    "Amazon Prime": "https://www.amazon.com/s?k={}&i=instant-video",
+    "Disney+": "https://www.disneyplus.com/search?q={}",
+    "Hulu": "https://www.hulu.com/search?q={}",
+    "HBO Max": "https://play.hbomax.com/search?query={}"
+}
+
+# Add these aggregator sites that legally track where movies are available
+MOVIE_SEARCH_SITES = {
+    "JustWatch": "https://www.justwatch.com/us/search?q={}",
+    "Reelgood": "https://reelgood.com/search?q={}",
+    "MovieFone": "https://www.moviefone.com/search/?q={}",
+    "Where to Watch": "https://www.wheretowatch.com/search?term={}"
+}
+
+# Replace the MOVIE_SITES dictionary with this code
+def parse_movie_sites():
+    movie_sites = {}
+    sites_str = os.getenv("MOVIE_SITES", "")
+    
+    if not sites_str:
+        return {}
+        
+    for site in sites_str.split(";"):
+        if not site:
+            continue
+            
+        try:
+            name, url, movie_selector, title_selector, link_selector = site.split("|")
+            movie_sites[name] = {
+                "url": url,
+                "movie_selector": movie_selector,
+                "title_selector": title_selector,
+                "link_selector": link_selector
+            }
+        except Exception as e:
+            print(f"Error parsing movie site config: {e}")
+            continue
+            
+    return movie_sites
+
+# Initialize MOVIE_SITES from environment
+MOVIE_SITES = parse_movie_sites()
+
+# Add these near your other environment variables
+TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
 
 class PrivateBot(commands.Bot):
     def __init__(self):
@@ -1686,6 +1770,220 @@ async def triggerlist(interaction: discord.Interaction):
     await view.load_page()
     await interaction.response.send_message(embed=view.get_embed(), view=view, ephemeral=True)
 
+# Add these classes near your other modal/view classes (before the sync command)
+class ImageUploadView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=300)
+
+    @discord.ui.button(label="Select Format", style=discord.ButtonStyle.primary, emoji="🔄")
+    async def format_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(ImageFormatModal())
+
+class ImageFormatModal(discord.ui.Modal, title="Select Format"):
+    def __init__(self):
+        super().__init__()
+        self.format = discord.ui.TextInput(
+            label="Target Format",
+            placeholder="Enter format: png, jpg, webp, gif, etc.",
+            required=True,
+            max_length=10,
+            style=discord.TextStyle.short
+        )
+        self.add_item(self.format)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        # Validate format first
+        target_format = self.format.value.lower()
+        supported_formats = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'bmp', 'ico']
+        
+        if target_format not in supported_formats:
+            await interaction.response.send_message(
+                f"❌ Unsupported format! Supported formats: {', '.join(supported_formats)}", 
+                ephemeral=True
+            )
+            return
+
+        # If format is valid, show upload options
+        await interaction.response.send_message(
+            "Choose how to upload your image:",
+            view=ImageUploadMethodView(target_format),
+            ephemeral=True
+        )
+
+class ImageUploadMethodView(discord.ui.View):
+    def __init__(self, target_format):
+        super().__init__(timeout=300)
+        self.target_format = target_format
+
+    @discord.ui.button(label="Upload File", style=discord.ButtonStyle.primary, emoji="📁")
+    async def file_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(
+            "Please upload your image file now. I'll wait for your upload...",
+            ephemeral=True
+        )
+        
+        def check(m):
+            return (m.author.id == interaction.user.id and 
+                   m.attachments and 
+                   m.channel.id == interaction.channel.id)
+        
+        try:
+            message = await interaction.client.wait_for('message', timeout=60.0, check=check)
+            await self.process_image(interaction, message.attachments[0])
+        except asyncio.TimeoutError:
+            await interaction.followup.send("Upload timed out. Please try again.", ephemeral=True)
+
+    @discord.ui.button(label="Upload by URL", style=discord.ButtonStyle.secondary, emoji="🔗")
+    async def url_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_modal(ImageURLModal(self.target_format))
+
+    async def process_image(self, interaction, attachment):
+        try:
+            await interaction.followup.send("⏳ Processing your image...", ephemeral=True)
+            
+            # Download image
+            image_data = await attachment.read()
+            
+            # Process and convert
+            image = Image.open(io.BytesIO(image_data))
+            output = io.BytesIO()
+            
+            if self.target_format == 'jpg':
+                if image.mode in ('RGBA', 'P'):
+                    image = image.convert('RGB')
+            
+            image.save(output, format=self.target_format.upper())
+            output.seek(0)
+
+            # Send converted image
+            await interaction.followup.send(
+                f"✅ Here's your converted image in {self.target_format.upper()} format:",
+                file=discord.File(output, f"converted.{self.target_format}"),
+                ephemeral=True
+            )
+
+        except Exception as e:
+            print(f"Error processing image: {e}")
+            await interaction.followup.send(
+                "❌ An error occurred while processing the image. Please try again.",
+                ephemeral=True
+            )
+
+    async def process_url(self, interaction, url):
+        try:
+            await interaction.followup.send("⏳ Processing your image...", ephemeral=True)
+            
+            # Download from URL
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url) as response:
+                    if response.status != 200:
+                        await interaction.followup.send("❌ Failed to download image from URL.", ephemeral=True)
+                        return
+                    image_data = await response.read()
+
+            # Process and convert
+            image = Image.open(io.BytesIO(image_data))
+            output = io.BytesIO()
+            
+            if self.target_format == 'jpg':
+                if image.mode in ('RGBA', 'P'):
+                    image = image.convert('RGB')
+            
+            image.save(output, format=self.target_format.upper())
+            output.seek(0)
+
+            # Send converted image
+            await interaction.followup.send(
+                f"✅ Here's your converted image in {self.target_format.upper()} format:",
+                file=discord.File(output, f"converted.{self.target_format}"),
+                ephemeral=True
+            )
+
+        except Exception as e:
+            print(f"Error processing URL: {e}")
+            await interaction.followup.send(
+                "❌ An error occurred while processing the image. Please try again.",
+                ephemeral=True
+            )
+
+class ImageURLModal(discord.ui.Modal, title="Image URL"):
+    def __init__(self, target_format):
+        super().__init__()
+        self.target_format = target_format
+        self.url = discord.ui.TextInput(
+            label="Image URL",
+            placeholder="Enter the direct URL to your image",
+            required=True,
+            style=discord.TextStyle.short
+        )
+        self.add_item(self.url)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        view = ImageUploadMethodView(self.target_format)
+        await view.process_url(interaction, self.url.value)
+
+@bot.tree.command(
+    name="imageconvert",
+    description="Convert images between different formats (PNG, JPG, WEBP, GIF, etc.)"
+)
+async def imageconvert(interaction: discord.Interaction):
+    if interaction.user.id not in settings.get("allowed_users"):
+        await unauthorized_message(interaction)
+        return
+
+    embed = discord.Embed(
+        title="🖼️ Image Converter",
+        description=(
+            "Convert your images between different formats!\n\n"
+            "**Supported formats:**\n"
+            "• PNG - Best for graphics with transparency\n"
+            "• JPG - Good for photos, smaller file size\n"
+            "• WEBP - Modern format, good compression\n"
+            "• GIF - For animated images\n"
+            "• BMP - Uncompressed format\n"
+            "• ICO - For icons\n\n"
+            "**How to use:**\n"
+            "1. Upload your image\n"
+            "2. Click the button below\n"
+            "3. Enter desired format\n"
+            "4. Get your converted image!"
+        ),
+        color=int(settings.get("embed_color"), 16)
+    )
+    embed.set_footer(text="Note: All conversions are private and ephemeral")
+
+    await interaction.response.send_message(
+        embed=embed,
+        view=ImageUploadView(),
+        ephemeral=True
+    )
+
+# Then your sync command follows...
+@bot.tree.command(
+    name="sync",
+    description="Sync all commands (Owner Only)"
+)
+async def sync(interaction: discord.Interaction):
+    if interaction.user.id != OWNER_ID:
+        await unauthorized_message(interaction)
+        return
+        
+    try:
+        print("Syncing commands...")
+        synced = await bot.tree.sync()
+        print(f"Synced {len(synced)} commands")
+        await interaction.response.send_message(
+            f"✅ Successfully synced {len(synced)} commands!", 
+            ephemeral=True
+        )
+    except Exception as e:
+        print(f"Error syncing commands: {e}")
+        await interaction.response.send_message(
+            "❌ Error syncing commands", 
+            ephemeral=True
+        )
+
 # Replace the dummy server code with this simpler version
 def run_dummy_server():
     """Run a simple TCP server to satisfy Render's port requirement"""
@@ -1727,6 +2025,1688 @@ if os.environ.get("IS_RENDER"):
         print("TCP Server is running!")
     except Exception as e:
         print(f"Warning: Could not verify server: {e}")
+
+class ImagesToPDFView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=600)  # 10 minute timeout
+        self.images = []
+        self.waiting_for_images = False
+
+    @discord.ui.button(label="Upload Images", style=discord.ButtonStyle.primary, emoji="📸")
+    async def upload_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.waiting_for_images = True
+        await interaction.response.send_message(
+            "Please upload your images now. You can upload multiple images.\n"
+            "Type `done` when you've finished uploading, or `cancel` to abort.",
+            ephemeral=True
+        )
+        
+        while self.waiting_for_images:
+            def check(m):
+                return (m.author.id == interaction.user.id and 
+                       m.channel.id == interaction.channel.id and
+                       (m.attachments or m.content.lower() in ['done', 'cancel']))
+            
+            try:
+                message = await interaction.client.wait_for('message', timeout=300.0, check=check)
+                
+                if message.content.lower() == 'done':
+                    if not self.images:
+                        await interaction.followup.send("No images were uploaded. Please try again.", ephemeral=True)
+                        self.waiting_for_images = False
+                        return
+                    await self.create_pdf(interaction)
+                    self.waiting_for_images = False
+                    return
+                
+                elif message.content.lower() == 'cancel':
+                    await interaction.followup.send("Operation cancelled.", ephemeral=True)
+                    self.waiting_for_images = False
+                    return
+                
+                elif message.attachments:
+                    for attachment in message.attachments:
+                        if attachment.content_type.startswith('image/'):
+                            self.images.append(attachment)
+                            await interaction.followup.send(
+                                f"✅ Added image: {attachment.filename}\n"
+                                f"Total images: {len(self.images)}\n"
+                                "Keep uploading or type `done` when finished.",
+                                ephemeral=True
+                            )
+                        else:
+                            await interaction.followup.send(
+                                f"❌ Skipped {attachment.filename}: Not an image file.",
+                                ephemeral=True
+                            )
+                
+            except asyncio.TimeoutError:
+                await interaction.followup.send("Timed out. Please try again.", ephemeral=True)
+                self.waiting_for_images = False
+                return
+
+    async def create_pdf(self, interaction):
+        try:
+            await interaction.followup.send("⏳ Creating PDF...", ephemeral=True)
+            
+            # Create a PDF
+            pdf = FPDF()
+            temp_files = []  # Keep track of temp files
+            
+            for attachment in self.images:
+                try:
+                    # Download image
+                    image_data = await attachment.read()
+                    image = Image.open(io.BytesIO(image_data))
+                    
+                    # Convert to RGB if necessary
+                    if image.mode in ('RGBA', 'P'):
+                        image = image.convert('RGB')
+                    
+                    # Save as temporary JPG with unique name
+                    temp_jpg = f'temp_{len(temp_files)}_{attachment.filename}.jpg'
+                    temp_files.append(temp_jpg)
+                    image.save(temp_jpg, 'JPEG')
+                    
+                    # Add to PDF
+                    pdf.add_page()
+                    
+                    # Get image dimensions
+                    img_width, img_height = image.size
+                    aspect = img_height / img_width
+                    
+                    # Calculate dimensions to fit page
+                    pdf_width = pdf.w - 20  # margins
+                    pdf_height = pdf_width * aspect
+                    
+                    # Add image to page
+                    pdf.image(temp_jpg, x=10, y=10, w=pdf_width)
+                    
+                except Exception as e:
+                    print(f"Error processing image {attachment.filename}: {e}")
+                    continue
+            
+            # Save PDF to temporary file
+            temp_pdf = 'temp_output.pdf'
+            pdf.output(temp_pdf)
+            
+            # Read the PDF and send it
+            with open(temp_pdf, 'rb') as f:
+                pdf_data = f.read()
+                await interaction.followup.send(
+                    f"✅ Created PDF with {len(self.images)} images!",
+                    file=discord.File(io.BytesIO(pdf_data), "combined_images.pdf"),
+                    ephemeral=True
+                )
+            
+            # Clean up all temporary files
+            for temp_file in temp_files:
+                if os.path.exists(temp_file):
+                    os.remove(temp_file)
+            if os.path.exists(temp_pdf):
+                os.remove(temp_pdf)
+            
+        except Exception as e:
+            print(f"Error creating PDF: {e}")
+            # Clean up any remaining temp files
+            for temp_file in temp_files:
+                if os.path.exists(temp_file):
+                    os.remove(temp_file)
+            if os.path.exists(temp_pdf):
+                os.remove(temp_pdf)
+            await interaction.followup.send(
+                "❌ An error occurred while creating the PDF. Please try again.",
+                ephemeral=True
+            )
+
+@bot.tree.command(
+    name="imagestopdf",
+    description="Combine multiple images into a single PDF file"
+)
+async def imagestopdf(interaction: discord.Interaction):
+    if interaction.user.id not in settings.get("allowed_users"):
+        await unauthorized_message(interaction)
+        return
+
+    embed = discord.Embed(
+        title="📸 Images to PDF Converter",
+        description=(
+            "Combine multiple images into a single PDF file!\n\n"
+            "**Features:**\n"
+            "• Upload multiple images\n"
+            "• Maintains image quality\n"
+            "• Automatic page sizing\n"
+            "• Supports most image formats\n\n"
+            "**How to use:**\n"
+            "1. Click the Upload button\n"
+            "2. Upload your images\n"
+            "3. Type `done` when finished\n"
+            "4. Get your PDF file!\n\n"
+            "**Note:**\n"
+            "• Type `cancel` to abort\n"
+            "• Maximum time: 5 minutes\n"
+            "• Images are added in upload order"
+        ),
+        color=int(settings.get("embed_color"), 16)
+    )
+    embed.set_footer(text="All conversions are private and ephemeral")
+
+    await interaction.response.send_message(
+        embed=embed,
+        view=ImagesToPDFView(),
+        ephemeral=True
+    )
+
+# Add after ImagesToPDFView class
+class DocConvertView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=300)
+
+    @discord.ui.button(label="Upload Document", style=discord.ButtonStyle.primary, emoji="📄")
+    async def upload_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message(
+            "Please upload your DOCX file. I'll convert it to PDF.",
+            ephemeral=True
+        )
+        
+        def check(m):
+            return (m.author.id == interaction.user.id and 
+                   m.attachments and 
+                   m.channel.id == interaction.channel.id)
+        
+        try:
+            message = await interaction.client.wait_for('message', timeout=60.0, check=check)
+            attachment = message.attachments[0]
+            
+            # Verify file type
+            if not attachment.filename.lower().endswith('.docx'):
+                await interaction.followup.send(
+                    "❌ Please upload a DOCX file.",
+                    ephemeral=True
+                )
+                return
+                
+            await self.convert_to_pdf(interaction, attachment)
+            
+        except asyncio.TimeoutError:
+            await interaction.followup.send("Upload timed out. Please try again.", ephemeral=True)
+
+    async def convert_to_pdf(self, interaction, attachment):
+        try:
+            await interaction.followup.send("⏳ Converting document to PDF...", ephemeral=True)
+            
+            # Download the DOCX file
+            docx_data = await attachment.read()
+            temp_docx = 'temp_document.docx'
+            temp_pdf = 'temp_document.pdf'
+            
+            # Save DOCX temporarily
+            with open(temp_docx, 'wb') as f:
+                f.write(docx_data)
+            
+            try:
+                # Open the Word document
+                doc = docx.Document(temp_docx)
+                
+                # Create PDF
+                c = canvas.Canvas(temp_pdf, pagesize=letter)
+                width, height = letter
+                
+                # Convert each paragraph
+                y = height - 40  # Start from top with margin
+                for para in doc.paragraphs:
+                    if y < 40:  # Bottom margin
+                        c.showPage()
+                        y = height - 40
+                    
+                    # Add text
+                    text = para.text
+                    if text.strip():  # Only process non-empty paragraphs
+                        # Handle different paragraph styles
+                        if para.style.name.startswith('Heading'):
+                            c.setFont("Helvetica-Bold", 14)
+                        else:
+                            c.setFont("Helvetica", 12)
+                        
+                        # Word wrap and write text
+                        words = text.split()
+                        line = []
+                        for word in words:
+                            line.append(word)
+                            line_text = ' '.join(line)
+                            if c.stringWidth(line_text, "Helvetica", 12) > width - 80:
+                                # Write line and move down
+                                c.drawString(40, y, ' '.join(line[:-1]))
+                                y -= 20
+                                line = [word]
+                        
+                        if line:  # Write remaining text
+                            c.drawString(40, y, ' '.join(line))
+                            y -= 20
+                    
+                    # Add extra space between paragraphs
+                    y -= 10
+                
+                c.save()
+                
+                # Read the PDF
+                with open(temp_pdf, 'rb') as f:
+                    pdf_data = f.read()
+                
+                # Send the converted PDF
+                await interaction.followup.send(
+                    "✅ Here's your converted PDF file:",
+                    file=discord.File(io.BytesIO(pdf_data), "converted.pdf"),
+                    ephemeral=True
+                )
+                
+            finally:
+                # Clean up temp files
+                if os.path.exists(temp_docx):
+                    os.remove(temp_docx)
+                if os.path.exists(temp_pdf):
+                    os.remove(temp_pdf)
+            
+        except Exception as e:
+            print(f"Error converting document: {e}")
+            await interaction.followup.send(
+                "❌ An error occurred while converting the document. Please try again.",
+                ephemeral=True
+            )
+
+@bot.tree.command(
+    name="docconvert",
+    description="Convert DOCX documents to PDF"
+)
+async def docconvert(interaction: discord.Interaction):
+    if interaction.user.id not in settings.get("allowed_users"):
+        await unauthorized_message(interaction)
+        return
+
+    embed = discord.Embed(
+        title="📄 Document Converter",
+        description=(
+            "Convert your DOCX documents to PDF!\n\n"
+            "**Features:**\n"
+            "• Maintains formatting\n"
+            "• Preserves images\n"
+            "• Keeps tables and styles\n"
+            "• Fast conversion\n\n"
+            "**How to use:**\n"
+            "1. Click the Upload button\n"
+            "2. Upload your DOCX file\n"
+            "3. Get your PDF file!\n\n"
+            "**Note:**\n"
+            "• Only DOCX files are supported\n"
+            "• Maximum file size: 8MB\n"
+            "• All conversions are private"
+        ),
+        color=int(settings.get("embed_color"), 16)
+    )
+    embed.set_footer(text="All conversions are private and ephemeral")
+
+    await interaction.response.send_message(
+        embed=embed,
+        view=DocConvertView(),
+        ephemeral=True
+    )
+
+class BlacklistView(discord.ui.View):
+    def __init__(self):
+        super().__init__(timeout=300)
+
+    @discord.ui.button(label="Add User", style=discord.ButtonStyle.danger, emoji="🚫")
+    async def add_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != OWNER_ID:
+            await interaction.response.send_message("❌ Only the owner can add users to blacklist.", ephemeral=True)
+            return
+        await interaction.response.send_modal(BlacklistAddModal())
+
+    @discord.ui.button(label="Remove User", style=discord.ButtonStyle.success, emoji="✅")
+    async def remove_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != OWNER_ID:
+            await interaction.response.send_message("❌ Only the owner can remove users from blacklist.", ephemeral=True)
+            return
+        await interaction.response.send_modal(BlacklistRemoveModal())
+
+    @discord.ui.button(label="Refresh List", style=discord.ButtonStyle.secondary, emoji="🔄")
+    async def refresh_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self.refresh_blacklist(interaction)
+
+    async def refresh_blacklist(self, interaction: discord.Interaction):
+        blacklisted_users = await get_blacklist()
+        
+        if not blacklisted_users:
+            embed = discord.Embed(
+                title="📋 Blacklisted Users",
+                description="No users are currently blacklisted.",
+                color=discord.Color.green()
+            )
+        else:
+            embed = discord.Embed(
+                title="📋 Blacklisted Users",
+                color=discord.Color.red()
+            )
+            
+            for user in blacklisted_users:
+                try:
+                    user_obj = await bot.fetch_user(user['user_id'])
+                    username = f"{user_obj.name} ({user_obj.id})"
+                except:
+                    username = f"Unknown User ({user['user_id']})"
+                
+                embed.add_field(
+                    name=username,
+                    value=f"**Reason:** {user['reason']}\n**Date:** {user['timestamp'][:10]}",
+                    inline=False
+                )
+
+        embed.set_footer(text="Use the buttons below to manage the blacklist")
+        await interaction.response.edit_message(embed=embed, view=self)
+
+class BlacklistAddModal(discord.ui.Modal, title="Add User to Blacklist"):
+    def __init__(self):
+        super().__init__()
+        self.user_id = discord.ui.TextInput(
+            label="User ID",
+            placeholder="Enter the user ID to blacklist",
+            required=True,
+            min_length=17,
+            max_length=20
+        )
+        self.reason = discord.ui.TextInput(
+            label="Reason",
+            placeholder="Enter the reason for blacklisting",
+            required=True,
+            max_length=100,
+            style=discord.TextStyle.paragraph
+        )
+        self.add_item(self.user_id)
+        self.add_item(self.reason)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            user_id = int(self.user_id.value)
+            
+            # Check if user is already blacklisted
+            if await is_blacklisted(user_id):
+                await interaction.response.send_message(
+                    "❌ This user is already blacklisted.",
+                    ephemeral=True
+                )
+                return
+
+            # Don't allow blacklisting the owner
+            if user_id == OWNER_ID:
+                await interaction.response.send_message(
+                    "❌ You cannot blacklist the bot owner.",
+                    ephemeral=True
+                )
+                return
+
+            if await add_to_blacklist(user_id, self.reason.value):
+                # Remove from allowed users if present
+                allowed_users = settings.get("allowed_users")
+                if user_id in allowed_users:
+                    allowed_users.remove(user_id)
+                    await save_allowed_users(allowed_users)
+                
+                user_obj = await bot.fetch_user(user_id)
+                embed = discord.Embed(
+                    title="✅ User Blacklisted",
+                    description=f"Successfully blacklisted {user_obj.name} ({user_id})",
+                    color=discord.Color.green()
+                )
+                embed.add_field(name="Reason", value=self.reason.value)
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+            else:
+                await interaction.response.send_message(
+                    "❌ Failed to add user to blacklist.",
+                    ephemeral=True
+                )
+        except ValueError:
+            await interaction.response.send_message(
+                "❌ Invalid user ID format.",
+                ephemeral=True
+            )
+
+class BlacklistRemoveModal(discord.ui.Modal, title="Remove User from Blacklist"):
+    def __init__(self):
+        super().__init__()
+        self.user_id = discord.ui.TextInput(
+            label="User ID",
+            placeholder="Enter the user ID to remove from blacklist",
+            required=True,
+            min_length=17,
+            max_length=20
+        )
+        self.add_item(self.user_id)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            user_id = int(self.user_id.value)
+            if await is_blacklisted(user_id):
+                if await remove_from_blacklist(user_id):
+                    user_obj = await bot.fetch_user(user_id)
+                    embed = discord.Embed(
+                        title="✅ User Removed from Blacklist",
+                        description=f"Successfully removed {user_obj.name} ({user_id}) from blacklist",
+                        color=discord.Color.green()
+                    )
+                    await interaction.response.send_message(embed=embed, ephemeral=True)
+                else:
+                    await interaction.response.send_message(
+                        "❌ Failed to remove user from blacklist.",
+                        ephemeral=True
+                    )
+            else:
+                await interaction.response.send_message(
+                    "❌ This user is not blacklisted.",
+                    ephemeral=True
+                )
+        except ValueError:
+            await interaction.response.send_message(
+                "❌ Invalid user ID format.",
+                ephemeral=True
+            )
+
+@bot.tree.command(
+    name="blacklist",
+    description="View and manage blacklisted users (Owner Only)"
+)
+async def blacklist(interaction: discord.Interaction):
+    if interaction.user.id != OWNER_ID:
+        await unauthorized_message(interaction)
+        return
+
+    blacklisted_users = await get_blacklist()
+    
+    if not blacklisted_users:
+        embed = discord.Embed(
+            title="📋 Blacklisted Users",
+            description="No users are currently blacklisted.",
+            color=discord.Color.green()
+        )
+    else:
+        embed = discord.Embed(
+            title="📋 Blacklisted Users",
+            color=discord.Color.red()
+        )
+        
+        for user in blacklisted_users:
+            try:
+                user_obj = await bot.fetch_user(user['user_id'])
+                username = f"{user_obj.name} ({user_obj.id})"
+            except:
+                username = f"Unknown User ({user['user_id']})"
+            
+            embed.add_field(
+                name=username,
+                value=f"**Reason:** {user['reason']}\n**Date:** {user['timestamp'][:10]}",
+                inline=False
+            )
+
+    embed.set_footer(text="Use the buttons below to manage the blacklist")
+    
+    await interaction.response.send_message(
+        embed=embed,
+        view=BlacklistView(),
+        ephemeral=True
+    )
+
+class ImagineModal(discord.ui.Modal, title="Generate Image"):
+    def __init__(self):
+        super().__init__()
+        self.prompt = discord.ui.TextInput(
+            label="Prompt",
+            placeholder="Describe the image you want to generate...",
+            required=True,
+            style=discord.TextStyle.paragraph,
+            max_length=1000
+        )
+        self.add_item(self.prompt)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        
+        try:
+            # Generate image using Stable Diffusion API
+            url = "https://api.stability.ai/v1/generation/stable-diffusion-v1-6/text-to-image"
+            
+            headers = {
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {STABILITY_API_KEY}",
+            }
+
+            body = {
+                "steps": 30,
+                "width": 512,
+                "height": 512,
+                "seed": 0,
+                "cfg_scale": 7,
+                "samples": 4,
+                "text_prompts": [
+                    {
+                        "text": self.prompt.value,
+                        "weight": 1
+                    }
+                ],
+            }
+            
+            async with aiohttp.ClientSession() as session:
+                await interaction.followup.send("🎨 Generating your images... Please wait!", ephemeral=True)
+                
+                async with session.post(url, headers=headers, json=body) as response:
+                    if response.status != 200:
+                        error_data = await response.json()
+                        print(f"API Error: {error_data}")
+                        await interaction.followup.send(
+                            "❌ Failed to generate images. Please try again.",
+                            ephemeral=True
+                        )
+                        return
+                    
+                    data = await response.json()
+                    
+                    # Create a temporary message to store images
+                    temp_message = await interaction.channel.send("🎨 Processing images...")
+                    
+                    # Process and upload images
+                    images = []
+                    files = []
+                    for i, image in enumerate(data["artifacts"]):
+                        try:
+                            # Convert base64 to file
+                            image_data = base64.b64decode(image["base64"])
+                            file = discord.File(
+                                io.BytesIO(image_data), 
+                                f"image_{i}.png",
+                                description=self.prompt.value
+                            )
+                            files.append(file)
+                        except Exception as e:
+                            print(f"Error processing image {i}: {e}")
+                            continue
+                    
+                    # Upload all images in one message
+                    if files:
+                        msg = await temp_message.edit(content="", attachments=files)
+                        images = [{
+                            'src': attachment.url,
+                            'prompt': self.prompt.value
+                        } for attachment in msg.attachments]
+                    
+                    # Clean up temp message if no images
+                    if not images:
+                        await temp_message.delete()
+                        await interaction.followup.send(
+                            "❌ Failed to process images. Please try again.",
+                            ephemeral=True
+                        )
+                        return
+                    
+                    # Create embed with results
+                    embed = discord.Embed(
+                        title="🎨 Generated Images",
+                        description=f"**Your Prompt:** {self.prompt.value}",
+                        color=discord.Color.blue()
+                    )
+                    
+                    # Set first image and create view
+                    embed.set_image(url=images[0]['src'])
+                    embed.set_footer(text=f"Image 1/{len(images)} • Use buttons to navigate")
+                    
+                    # Send result and delete temp message
+                    await interaction.followup.send(
+                        embed=embed,
+                        view=ImageResultView(images),
+                        ephemeral=True
+                    )
+                    await temp_message.delete()
+                    
+        except Exception as e:
+            print(f"Error generating images: {e}")
+            await interaction.followup.send(
+                "❌ An error occurred while generating images. Please try again.",
+                ephemeral=True
+            )
+
+class ImageResultView(discord.ui.View):
+    def __init__(self, images):
+        super().__init__(timeout=300)
+        self.images = images
+        self.current = 0
+
+    @discord.ui.button(label="Previous", style=discord.ButtonStyle.secondary, emoji="⬅️")
+    async def prev_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.current = (self.current - 1) % len(self.images)
+        await self.update_image(interaction)
+
+    @discord.ui.button(label="Next", style=discord.ButtonStyle.secondary, emoji="➡️")
+    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.current = (self.current + 1) % len(self.images)
+        await self.update_image(interaction)
+
+    @discord.ui.button(label="Save", style=discord.ButtonStyle.primary, emoji="💾")
+    async def save_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        current_image = self.images[self.current]
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(current_image['src']) as response:
+                    if response.status != 200:
+                        await interaction.response.send_message(
+                            "❌ Failed to download image.",
+                            ephemeral=True
+                        )
+                        return
+                    
+                    image_data = await response.read()
+                    await interaction.response.send_message(
+                        "✅ Here's your image:",
+                        file=discord.File(io.BytesIO(image_data), "generated_image.png"),
+                        ephemeral=True
+                    )
+        except Exception as e:
+            print(f"Error saving image: {e}")
+            await interaction.response.send_message(
+                "❌ Failed to save image.",
+                ephemeral=True
+            )
+
+    async def update_image(self, interaction: discord.Interaction):
+        """Update the embed with the current image"""
+        try:
+            current_image = self.images[self.current]
+            embed = interaction.message.embeds[0]
+            embed.set_image(url=current_image['src'])
+            embed.set_footer(text=f"Image {self.current + 1}/{len(self.images)} • Use buttons to navigate")
+            await interaction.response.edit_message(embed=embed, view=self)
+        except Exception as e:
+            print(f"Error updating image: {e}")
+            await interaction.response.send_message(
+                "❌ Failed to update image. Please try again.",
+                ephemeral=True
+            )
+
+@bot.tree.command(
+    name="imagine",
+    description="Generate images from text descriptions"
+)
+async def imagine(interaction: discord.Interaction):
+    if interaction.user.id not in settings.get("allowed_users"):
+        await unauthorized_message(interaction)
+        return
+
+    modal = ImagineModal()
+    await interaction.response.send_modal(modal)
+
+class MemeTemplateView(discord.ui.View):
+    def __init__(self, text: str):
+        super().__init__(timeout=300)
+        self.text = text
+        self.current = 0
+        # Remove the hardcoded templates since we're using memes.py
+        self.templates = {}
+        self.template_list = []
+
+    @discord.ui.button(label="Previous", style=discord.ButtonStyle.secondary, emoji="⬅️")
+    async def prev_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.current = (self.current - 1) % len(self.templates)
+        await self.update_preview(interaction)
+
+    @discord.ui.button(label="Use Template", style=discord.ButtonStyle.primary, emoji="✨")
+    async def use_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        template_name, template = self.template_list[self.current]
+        await interaction.response.send_modal(
+            MemeTextModal(
+                template["id"],
+                template_name,
+                template["parts"],
+                template["labels"]
+            )
+        )
+
+    @discord.ui.button(label="Next", style=discord.ButtonStyle.secondary, emoji="➡️")
+    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.current = (self.current + 1) % len(self.templates)
+        await self.update_preview(interaction)
+
+    async def update_preview(self, interaction: discord.Interaction):
+        template_name, template = self.template_list[self.current]
+        
+        embed = discord.Embed(
+            title="🎭 Meme Generator",
+            description=f"**Current Template:** {template_name}\n{template['description']}",
+            color=discord.Color.blue()
+        )
+        
+        # Add template info
+        embed.add_field(
+            name="Number of Text Parts",
+            value=str(template["parts"]),
+            inline=True
+        )
+        embed.add_field(
+            name="Text Fields",
+            value="\n".join(template["labels"]),
+            inline=True
+        )
+        
+        # Set preview image using the URL from our templates
+        embed.set_image(url=template["preview"])
+        embed.set_footer(text=f"Template {self.current + 1}/4 • Click 'Use Template' to create meme")
+        
+        try:
+            await interaction.response.edit_message(embed=embed, view=self)
+        except discord.errors.InteractionResponded:
+            await interaction.followup.edit_message(message_id=interaction.message.id, embed=embed, view=self)
+
+class MemeTextModal(discord.ui.Modal):
+    def __init__(self, template_id: str, template_name: str, num_parts: int, labels: list):
+        super().__init__(title=f"Create {template_name} Meme")
+        self.template_id = template_id
+        self.template_name = template_name
+        
+        # Dynamically add text inputs based on number of parts
+        for i in range(num_parts):
+            setattr(self, f"text{i}", discord.ui.TextInput(
+                label=labels[i],
+                placeholder=f"Enter text for {labels[i]}...",
+                required=True,
+                max_length=50
+            ))
+            self.add_item(getattr(self, f"text{i}"))
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        
+        try:
+            # Create meme using imgflip API
+            url = "https://api.imgflip.com/caption_image"
+            
+            # Collect all text inputs
+            texts = {}
+            for i in range(len(self.children)):
+                texts[f"text{i}"] = getattr(self, f"text{i}").value
+            
+            # Create params
+            params = {
+                "template_id": self.template_id,
+                "username": os.getenv("IMGFLIP_USERNAME"),
+                "password": os.getenv("IMGFLIP_PASSWORD")
+            }
+            # Add text fields
+            for key, value in texts.items():
+                params[key] = value
+            
+            print(f"Sending request with params: {params}")
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, data=params) as response:
+                    data = await response.json()
+                    print(f"API Response: {data}")
+                    
+                    if not data['success']:
+                        error_msg = data.get('error_message', 'Unknown error')
+                        print(f"API Error: {error_msg}")
+                        await interaction.followup.send(
+                            f"❌ Failed to generate meme: {error_msg}",
+                            ephemeral=True
+                        )
+                        return
+                    
+                    # Create embed with meme
+                    embed = discord.Embed(
+                        title=f"🎭 {self.template_name} Meme",
+                        description=f"Created by {interaction.user.name}",
+                        color=discord.Color.random()
+                    )
+                    embed.set_image(url=data['data']['url'])
+                    
+                    # Send as public message
+                    await interaction.channel.send(embed=embed)
+                    
+        except Exception as e:
+            print(f"Error generating meme: {e}")
+            await interaction.followup.send(
+                "❌ An error occurred while generating the meme. Please try again.",
+                ephemeral=True
+            )
+
+@bot.tree.command(
+    name="meme",
+    description="Generate a meme with your text"
+)
+async def meme(interaction: discord.Interaction):
+    if interaction.user.id not in settings.get("allowed_users"):
+        await unauthorized_message(interaction)
+        return
+
+    # Get random templates from memes.py
+    selected_templates = get_random_templates(4)
+    
+    view = MemeTemplateView(interaction.user.id)
+    view.templates = selected_templates
+    view.template_list = list(selected_templates.items())
+    template_name, template = view.template_list[0]
+    
+    embed = discord.Embed(
+        title="🎭 Meme Generator",
+        description=f"**Current Template:** {template_name}\n{template['description']}",
+        color=discord.Color.blue()
+    )
+    
+    # Add template info
+    embed.add_field(
+        name="Number of Text Parts",
+        value=str(template["parts"]),
+        inline=True
+    )
+    embed.add_field(
+        name="Text Fields",
+        value="\n".join(template["labels"]),
+        inline=True
+    )
+    
+    # Set preview image
+    embed.set_image(url=template["preview"])
+    embed.set_footer(text=f"Template 1/4 • Click 'Use Template' to create meme")
+    
+    await interaction.response.send_message(
+        embed=embed,
+        view=view,
+        ephemeral=True
+    )
+
+class MovieView(discord.ui.View):
+    def __init__(self, movie_data: list):
+        super().__init__(timeout=300)
+        self.current = 0
+        self.movies = movie_data
+
+    @discord.ui.button(label="Previous", style=discord.ButtonStyle.secondary, emoji="⬅️")
+    async def prev_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.current = (self.current - 1) % len(self.movies)
+        await self.update_movie(interaction)
+
+    @discord.ui.button(label="More Info", style=discord.ButtonStyle.primary, emoji="🎬")
+    async def info_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        movie = self.movies[self.current]
+        tmdb_url = f"https://www.themoviedb.org/movie/{movie['id']}"
+        await interaction.response.send_message(f"View more details at: {tmdb_url}", ephemeral=True)
+
+    @discord.ui.button(label="Next", style=discord.ButtonStyle.secondary, emoji="➡️")
+    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.current = (self.current + 1) % len(self.movies)
+        await self.update_movie(interaction)
+
+    async def update_movie(self, interaction: discord.Interaction):
+        movie = self.movies[self.current]
+        
+        embed = discord.Embed(
+            title=f"🎬 {movie['title']} ({movie['release_date'][:4]})",
+            description=movie['overview'],
+            color=discord.Color.blue()
+        )
+        
+        if movie['poster_path']:
+            embed.set_image(url=f"https://image.tmdb.org/t/p/w500{movie['poster_path']}")
+        
+        embed.add_field(
+            name="Rating",
+            value=f"⭐ {movie['vote_average']}/10",
+            inline=True
+        )
+        embed.add_field(
+            name="Votes",
+            value=f"👥 {movie['vote_count']}",
+            inline=True
+        )
+        
+        embed.set_footer(text=f"Movie {self.current + 1}/{len(self.movies)} • Click 'More Info' for details")
+        
+        await interaction.response.edit_message(embed=embed, view=self)
+
+@bot.tree.command(
+    name="searchmovie",
+    description="Search for a movie across streaming sites"
+)
+async def searchmovie(interaction: discord.Interaction, movie: str):
+    """Search for movie streaming links"""
+    if interaction.user.id not in settings.get("allowed_users"):
+        await unauthorized_message(interaction)
+        return
+
+    await interaction.response.defer()
+
+    try:
+        embed = discord.Embed(
+            title=f"🎬 Search results for: {movie}",
+            description="Searching for streaming links...",
+            color=discord.Color.blue()
+        )
+
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        }
+
+        async with aiohttp.ClientSession(headers=headers) as session:
+            for site_name, site_info in MOVIE_SITES.items():
+                try:
+                    search_url = site_info["url"].format(quote(movie))
+                    async with session.get(search_url) as response:
+                        if response.status == 200:
+                            html = await response.text()
+                            soup = BeautifulSoup(html, 'html.parser')
+                            
+                            # Find movie items using the site's selectors
+                            movies = soup.select(site_info["movie_selector"])
+                            if movies:
+                                movie_item = movies[0]  # Get first result
+                                title = movie_item.select_one(site_info["title_selector"]).text.strip()
+                                link = movie_item.select_one(site_info["link_selector"])["href"]
+                                if not link.startswith("http"):
+                                    link = urljoin(search_url, link)
+                                
+                                embed.add_field(
+                                    name=f"{site_name}",
+                                    value=f"[{title}]({link})",
+                                    inline=False
+                                )
+                except Exception as e:
+                    print(f"Error searching {site_name}: {e}")
+                    continue
+
+        if len(embed.fields) > 0:
+            embed.set_footer(text="⚠️ Please verify links before using them")
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        else:
+            await interaction.followup.send(
+                "❌ No streaming links found. Try another movie title.",
+                ephemeral=True
+            )
+
+    except Exception as e:
+        print(f"Error searching movie: {e}")
+        await interaction.followup.send(
+            "❌ An error occurred while searching. Please try again.",
+            ephemeral=True
+        )
+
+class YoutubeModal(discord.ui.Modal):
+    def __init__(self):
+        super().__init__(title="YouTube Downloader")
+        self.url = discord.ui.TextInput(
+            label="YouTube URL",
+            placeholder="Enter YouTube video URL...",
+            required=True
+        )
+        self.timestamp = discord.ui.TextInput(
+            label="Timestamp (optional)",
+            placeholder="Example: 1:30-2:45 or leave empty for full video",
+            required=False
+        )
+        self.add_item(self.url)
+        self.add_item(self.timestamp)
+
+    def parse_timestamp(self, timestamp: str) -> tuple:
+        if not timestamp or '-' not in timestamp:
+            return None, None
+            
+        try:
+            start, end = timestamp.split('-')
+            
+            # Convert timestamps to seconds
+            def to_seconds(ts):
+                parts = ts.strip().split(':')
+                if len(parts) == 2:
+                    m, s = map(int, parts)
+                    return m * 60 + s
+                elif len(parts) == 3:
+                    h, m, s = map(int, parts)
+                    return h * 3600 + m * 60 + s
+                return int(ts)
+                
+            start_seconds = to_seconds(start)
+            end_seconds = to_seconds(end)
+            return start_seconds, end_seconds
+            
+        except:
+            return None, None
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        
+        try:
+            # Extract video info first
+            with yt_dlp.YoutubeDL() as ydl:
+                info = ydl.extract_info(self.url.value, download=False)
+                
+                # Get more detailed info
+                title = info['title']
+                thumbnail = info.get('thumbnail', '')
+                duration = info['duration']
+                channel = info.get('uploader', 'Unknown')
+                views = info.get('view_count', 0)
+                likes = info.get('like_count', 0)
+                upload_date = info.get('upload_date', '')
+                
+                # Format upload date
+                if upload_date:
+                    upload_date = f"{upload_date[:4]}-{upload_date[4:6]}-{upload_date[6:]}"
+                
+                # Parse timestamps
+                start_time, end_time = self.parse_timestamp(self.timestamp.value)
+                
+                # Create embed with more details
+                embed = discord.Embed(
+                    title=title,
+                    url=self.url.value,
+                    description=info.get('description', '')[:200] + "...",  # First 200 chars of description
+                    color=discord.Color.red()
+                )
+                
+                # Set large thumbnail
+                if thumbnail:
+                    embed.set_image(url=thumbnail)
+                
+                # Add video details
+                embed.add_field(
+                    name="Channel",
+                    value=channel,
+                    inline=True
+                )
+                embed.add_field(
+                    name="Duration",
+                    value=f"{duration//60}:{duration%60:02d}",
+                    inline=True
+                )
+                embed.add_field(
+                    name="Views",
+                    value=f"{views:,}",
+                    inline=True
+                )
+                if likes:
+                    embed.add_field(
+                        name="Likes",
+                        value=f"👍 {likes:,}",
+                        inline=True
+                    )
+                if upload_date:
+                    embed.add_field(
+                        name="Upload Date",
+                        value=upload_date,
+                        inline=True
+                    )
+                
+                if start_time is not None and end_time is not None:
+                    embed.add_field(
+                        name="Selected Clip",
+                        value=f"From {start_time}s to {end_time}s",
+                        inline=True
+                    )
+                
+                embed.set_footer(text="Select a download option below")
+                
+                # Create view with download options
+                view = YoutubeDownloadView(self.url.value, info, start_time, end_time)
+                await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+            
+        except Exception as e:
+            print(f"Error processing YouTube URL: {e}")
+            await interaction.followup.send(
+                "❌ Error processing video. Make sure the URL and timestamp format are valid.",
+                ephemeral=True
+            )
+
+class YoutubeDownloadView(discord.ui.View):
+    def __init__(self, url: str, info: dict, start_time: int = None, end_time: int = None):
+        super().__init__(timeout=300)
+        self.url = url
+        self.info = info
+        self.start_time = start_time
+        self.end_time = end_time
+
+    @discord.ui.button(label="Download MP4", style=discord.ButtonStyle.primary, emoji="🎥")
+    async def mp4_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        try:
+            await interaction.followup.send(
+                "⏳ Processing video... Please wait.",
+                ephemeral=True
+            )
+
+            ydl_opts = {
+                'format': 'bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4] / bv*+ba/b',
+                'outtmpl': '%(title)s.%(ext)s',
+                'quiet': False,
+                'no_warnings': False,
+                'merge_output_format': 'mp4',
+            }
+
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(self.url, download=True)
+                filename = ydl.prepare_filename(info)
+                
+                if not filename.endswith('.mp4'):
+                    filename = filename.rsplit('.', 1)[0] + '.mp4'
+
+                if not os.path.exists(filename):
+                    raise Exception("Download failed - file not found")
+
+                # If timestamps are provided, trim the video
+                if self.start_time is not None and self.end_time is not None:
+                    output_filename = f"trimmed_{filename}"
+                    ffmpeg_cmd = [
+                        'ffmpeg', '-i', filename,
+                        '-ss', str(self.start_time),
+                        '-t', str(self.end_time - self.start_time),
+                        '-c', 'copy',
+                        output_filename
+                    ]
+                    
+                    process = await asyncio.create_subprocess_exec(
+                        *ffmpeg_cmd,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE
+                    )
+                    
+                    await process.communicate()
+                    os.remove(filename)
+                    filename = output_filename
+
+                # Check file size and compress if needed
+                file_size = os.path.getsize(filename)
+                if file_size > 50 * 1024 * 1024:  # If larger than 50MB
+                    compressed_filename = f"compressed_{filename}"
+                    compress_cmd = [
+                        'ffmpeg', '-i', filename,
+                        '-vf', 'scale=1280:-2',  # Scale to 720p
+                        '-c:v', 'libx264',
+                        '-crf', '28',  # Higher CRF = more compression
+                        '-c:a', 'aac',
+                        '-b:a', '128k',
+                        compressed_filename
+                    ]
+                    
+                    process = await asyncio.create_subprocess_exec(
+                        *compress_cmd,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE
+                    )
+                    
+                    await process.communicate()
+                    os.remove(filename)
+                    filename = compressed_filename
+
+                # Initialize Telegram bot and send video with longer timeout
+                bot = telegram.Bot(TELEGRAM_BOT_TOKEN)
+                
+                try:
+                    with open(filename, 'rb') as video_file:
+                        message = await bot.send_video(
+                            chat_id=TELEGRAM_CHAT_ID,
+                            video=video_file,
+                            caption=f"🎥 {info['title']}\n\nRequested by: {interaction.user.name}",
+                            read_timeout=300,  # 5 minutes timeout
+                            write_timeout=300,
+                            connect_timeout=300,
+                            pool_timeout=300
+                        )
+                        
+                        video_link = f"https://t.me/c/{TELEGRAM_CHAT_ID.replace('-100', '')}/{message.message_id}"
+                        
+                        embed = discord.Embed(
+                            title="✅ Video Downloaded Successfully!",
+                            description=f"Video was uploaded to Telegram.\n\n[Click here to watch/download]({video_link})",
+                            color=discord.Color.green()
+                        )
+                        if self.start_time is not None and self.end_time is not None:
+                            embed.add_field(
+                                name="Clip Duration", 
+                                value=f"From {self.start_time}s to {self.end_time}s"
+                            )
+                        embed.set_footer(text="The video will be available on Telegram")
+                        
+                        await interaction.followup.send(embed=embed, ephemeral=True)
+                        
+                except TelegramError as e:
+                    print(f"Telegram Error: {e}")
+                    await interaction.followup.send(
+                        "❌ Error uploading to Telegram. The file might be too large even after compression.",
+                        ephemeral=True
+                    )
+                
+                # Clean up
+                os.remove(filename)
+                
+        except Exception as e:
+            print(f"Error downloading MP4: {e}")
+            await interaction.followup.send(
+                f"❌ Error downloading video: {str(e)}. Try downloading as audio instead.",
+                ephemeral=True
+            )
+
+    @discord.ui.button(label="Download MP3", style=discord.ButtonStyle.success, emoji="🎵")
+    async def mp3_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        try:
+            ydl_opts = {
+                'format': 'bestaudio/best',
+                'postprocessors': [{
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '192',
+                }],
+                'outtmpl': '%(title)s.%(ext)s',
+            }
+            
+            # Add timestamp options if provided
+            if self.start_time is not None and self.end_time is not None:
+                def download_range(info):
+                    return [{
+                        'start_time': self.start_time,
+                        'end_time': self.end_time
+                    }]
+                
+                ydl_opts['download_ranges'] = download_range
+                ydl_opts['force_keyframes_at_cuts'] = True
+                ydl_opts['postprocessor_args'] = [
+                    '-ss', str(self.start_time),
+                    '-t', str(self.end_time - self.start_time)
+                ]
+
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(self.url, download=True)
+                filename = ydl.prepare_filename(info).rsplit(".", 1)[0] + ".mp3"
+                
+            # Send the file
+            await interaction.followup.send(
+                "✅ Here's your audio:",
+                file=discord.File(filename),
+                ephemeral=True
+            )
+            # Clean up
+            os.remove(filename)
+            
+        except Exception as e:
+            print(f"Error downloading MP3: {e}")
+            await interaction.followup.send(
+                "❌ Error downloading audio. Try a different format.",
+                ephemeral=True
+            )
+
+    @discord.ui.button(label="Download Thumbnail", style=discord.ButtonStyle.secondary, emoji="🖼️")
+    async def thumbnail_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.defer()
+        try:
+            thumbnail_url = self.info['thumbnail']
+            async with aiohttp.ClientSession() as session:
+                async with session.get(thumbnail_url) as resp:
+                    if resp.status == 200:
+                        data = await resp.read()
+                        await interaction.followup.send(
+                            "✅ Here's the thumbnail:",
+                            file=discord.File(io.BytesIO(data), 'thumbnail.jpg'),
+                            ephemeral=True
+                        )
+                    else:
+                        raise Exception(f"HTTP {resp.status}")
+                        
+        except Exception as e:
+            print(f"Error downloading thumbnail: {e}")
+            await interaction.followup.send(
+                "❌ Error downloading thumbnail.",
+                ephemeral=True
+            )
+
+@bot.tree.command(
+    name="ytdownload",
+    description="Download YouTube videos as MP4/MP3"
+)
+async def ytdownload(interaction: discord.Interaction):
+    """Download videos from YouTube"""
+    if interaction.user.id not in settings.get("allowed_users"):
+        await unauthorized_message(interaction)
+        return
+
+    modal = YoutubeModal()
+    await interaction.response.send_modal(modal)
+
+@bot.tree.command(
+    name="help",
+    description="Show all available commands"
+)
+async def help_command(interaction: discord.Interaction):
+    """Shows all available commands"""
+    if interaction.user.id not in settings.get("allowed_users"):
+        await unauthorized_message(interaction)
+        return
+
+    embed = discord.Embed(
+        title="🤖 Bot Commands",
+        description="Here are all the available commands:",
+        color=discord.Color.blue()
+    )
+
+    # Utility Commands
+    utility = """
+`/help` - Show this help message
+`/ping` - Check bot's latency
+`/prefix` - Change bot prefix
+`/settings` - View/edit bot settings
+`/adduser` - Add allowed user
+`/removeuser` - Remove allowed user
+"""
+    embed.add_field(name="⚙️ Utility", value=utility, inline=False)
+
+    # Media Commands
+    media = """
+`/ytdownload` - Download YouTube videos/audio
+• Supports timestamps (e.g., 1:30-2:45)
+• Auto-uploads large videos to Telegram
+• Supports MP4/MP3/Thumbnail download
+
+`/movie` - Search for movies and streaming links
+`/meme` - Create custom memes from templates
+"""
+    embed.add_field(name="🎬 Media", value=media, inline=False)
+
+    # AI & Generation
+    ai = """
+`/imagine` - Generate images from text
+`/gemini` - Chat with Google's Gemini AI
+`/draw` - Create AI art with Stable Diffusion
+"""
+    embed.add_field(name="🤖 AI & Generation", value=ai, inline=False)
+
+    # Notes & Triggers
+    notes = """
+`/note` - Create/manage notes
+`/trigger` - Create/manage auto-responses
+`/blacklist` - Manage blacklisted words
+"""
+    embed.add_field(name="📝 Notes & Triggers", value=notes, inline=False)
+
+    # Gaming
+    gaming = """
+`/valorant` - Get Valorant player stats
+`/valstats` - Detailed Valorant statistics
+"""
+    embed.add_field(name="🎮 Gaming", value=gaming, inline=False)
+
+    # File Operations
+    files = """
+`/pdf` - Create/convert PDF files
+`/docx` - Create/edit Word documents
+`/csv` - Handle CSV files
+"""
+    embed.add_field(name="📁 Files", value=files, inline=False)
+
+    embed.set_footer(text="All commands are slash commands • Some commands require specific permissions")
+
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+# Add these near your other commands
+@bot.tree.command(
+    name="hack",
+    description="Fake a hacking animation on someone"
+)
+async def hack(interaction: discord.Interaction, user: discord.Member):
+    """Pretends to hack someone with a fun animation"""
+    if interaction.user.id not in settings.get("allowed_users"):
+        await unauthorized_message(interaction)
+        return
+        
+    await interaction.response.send_message(f"**{interaction.user.name}** is attempting to hack **{user.name}**...")
+    
+    # Pool of possible steps with their success rates
+    possible_steps = [
+        ("Accessing mainframe...", 90),
+        ("Bypassing firewall...", 40),
+        ("Cracking password hash...", 70),
+        ("Accessing user files...", 50),
+        ("Downloading personal data...", 60),
+        ("Accessing Discord token...", 80),
+        ("Stealing browser cookies...", 85),
+        ("Injecting RAT malware...", 45),
+        ("Encrypting user files...", 75),
+        (f"Scanning {user.name}'s network...", 65),
+        ("Bypassing 2FA...", 30),
+        ("Accessing email accounts...", 55),
+        ("Checking for vulnerabilities...", 70),
+        ("Exploiting security holes...", 40),
+        ("Installing backdoor...", 60)
+    ]
+    
+    # Randomly select 6-10 steps
+    num_steps = random.randint(6, 10)
+    selected_steps = random.sample(possible_steps, num_steps)
+    
+    msg = await interaction.channel.send("```ini\n[Starting hack sequence...]```")
+    progress = ""
+    
+    for step, success_rate in selected_steps:
+        # Longer delay for downloading steps
+        if "Downloading" in step:
+            await asyncio.sleep(random.uniform(5, 10))
+        else:
+            await asyncio.sleep(random.uniform(1.5, 3))
+            
+        success = random.randint(1, 100) <= success_rate
+        
+        if success:
+            progress += f"\n[+] {step}"
+        else:
+            progress += f"\n[-] {step} [FAILED]"
+            # Add retry for failed steps (50% chance)
+            if random.choice([True, False]):
+                await asyncio.sleep(random.uniform(1, 2))
+                progress += f"\n[+] Retrying {step.lower()}"
+                
+        await msg.edit(content=f"```ini\n{progress}```")
+    
+    # Always end with upload and success
+    await asyncio.sleep(random.uniform(2, 4))
+    progress += f"\n[+] Uploading {user.name}'s data to Dark Web..."
+    await msg.edit(content=f"```ini\n{progress}```")
+    
+    await asyncio.sleep(2)
+    progress += f"\n[+] ✅ Successfully hacked {user.name}!"
+    await msg.edit(content=f"```ini\n{progress}```")
+    
+    # Show data upload summary
+    summary = f"""```ini
+[Hack Complete]
+Target: {user.name}
+Files Stolen: {random.randint(10000,99999)} files
+Uploaded to {random.randint(8,21)} Dark Web sites
+Server: #{''.join(random.choices('0123456789ABCDEF', k=8))}
+Time: {random.randint(30,120)} seconds```"""
+    
+    await interaction.channel.send(summary)
+
+@bot.tree.command(
+    name="ip",
+    description="Pretend to find someone's IP address (joke command)"
+)
+async def ip(interaction: discord.Interaction, user: discord.Member):
+    """Generates a fake IP address for the joke"""
+    if interaction.user.id not in settings.get("allowed_users"):
+        await unauthorized_message(interaction)
+        return
+        
+    # Generate a random fake IP
+    fake_ip = f"{random.randint(1,255)}.{random.randint(1,255)}.{random.randint(1,255)}.{random.randint(1,255)}"
+    
+    embed = discord.Embed(
+        title="IP Address Found",
+        description=f"**{interaction.user.name}** found **{user.name}**'s IP address:",
+        color=discord.Color.red()
+    )
+    
+    embed.add_field(
+        name="IP Address",
+        value=f"```{fake_ip}```",
+        inline=False
+    )
+    
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(
+    name="cardgen",
+    description="Generate fake card details (joke command)"
+)
+async def cardgen(interaction: discord.Interaction, card_type: Literal["Visa", "Mastercard", "American Express", "Rupay"]):
+    """Generates fake card details"""
+    if interaction.user.id not in settings.get("allowed_users"):
+        await unauthorized_message(interaction)
+        return
+
+    # Card number patterns
+    card_patterns = {
+        "Visa": "4",
+        "Mastercard": "5",
+        "American Express": "3",
+        "Rupay": "6"
+    }
+
+    # Card details based on type
+    card_lengths = {
+        "Visa": 16,
+        "Mastercard": 16,
+        "American Express": 15,
+        "Rupay": 16
+    }
+
+    # Generate card number
+    card_number = card_patterns[card_type]
+    remaining_length = card_lengths[card_type] - len(card_number)
+    card_number += ''.join([str(random.randint(0, 9)) for _ in range(remaining_length)])
+
+    # Format card number
+    if card_type == "American Express":
+        formatted_number = f"{card_number[:4]} {card_number[4:10]} {card_number[10:]}"
+    else:
+        formatted_number = ' '.join([card_number[i:i+4] for i in range(0, len(card_number), 4)])
+
+    # Generate expiry date (1-4 years from now)
+    future_date = datetime.now() + timedelta(days=random.randint(365, 1460))
+    expiry = future_date.strftime("%m/%y")
+
+    # Generate CVV
+    cvv = ''.join([str(random.randint(0, 9)) for _ in range(3 if card_type != "American Express" else 4)])
+
+    # Card issuer names
+    issuers = {
+        "Visa": ["Chase", "Bank of America", "Wells Fargo", "Citibank"],
+        "Mastercard": ["Capital One", "HSBC", "Barclays", "Deutsche Bank"],
+        "American Express": ["American Express", "American Express", "American Express", "American Express"],
+        "Rupay": ["SBI", "HDFC", "ICICI", "Punjab National Bank"]
+    }
+
+    # Create embed
+    card_colors = {
+        "Visa": discord.Color.blue(),
+        "Mastercard": discord.Color.orange(),
+        "American Express": discord.Color.dark_green(),
+        "Rupay": discord.Color.dark_red()
+    }
+
+    # Add random person names
+    first_names = [
+        "John", "Emma", "Michael", "Sophia", "William", "Olivia", 
+        "James", "Ava", "Alexander", "Isabella", "David", "Mia",
+        "Daniel", "Charlotte", "Joseph", "Amelia", "Henry", "Emily"
+    ]
+    
+    last_names = [
+        "Smith", "Johnson", "Williams", "Brown", "Jones", "Garcia",
+        "Miller", "Davis", "Rodriguez", "Martinez", "Anderson", "Taylor",
+        "Thomas", "Moore", "Jackson", "Martin", "Lee", "Thompson"
+    ]
+
+    # Generate random name
+    cardholder = f"{random.choice(first_names)} {random.choice(last_names)}"
+
+    embed = discord.Embed(
+        title=f"💳 Generated {card_type} Card",
+        color=card_colors[card_type]
+    )
+
+    embed.add_field(
+        name="Cardholder",
+        value=f"```{cardholder}```",
+        inline=False
+    )
+
+    embed.add_field(
+        name="Card Number",
+        value=f"```{formatted_number}```",
+        inline=False
+    )
+
+    embed.add_field(
+        name="Expiry",
+        value=f"```{expiry}```",
+        inline=True
+    )
+
+    embed.add_field(
+        name="CVV",
+        value=f"```{cvv}```",
+        inline=True
+    )
+
+    embed.add_field(
+        name="Issuer",
+        value=f"```{random.choice(issuers[card_type])}```",
+        inline=True
+    )
+
+    embed.set_footer(text="🎭 This is a joke command! All details are fake and randomly generated.")
+
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(
+    name="fakenitro",
+    description="Send a fake Nitro gift (Rickroll)"
+)
+async def fakenitro(interaction: discord.Interaction):
+    """Sends a fake Nitro gift that Rickrolls"""
+    if interaction.user.id not in settings.get("allowed_users"):
+        await unauthorized_message(interaction)
+        return
+
+    # Create a fake gift link
+    gift_codes = [
+        "xPvPfJNMhKqW9dzj",
+        "nB8Vk7YtLmQc4RxH",
+        "gT5wZsXnCj2KpFvM",
+        "dW3hR9yUqA6NmEbG",
+        "kY8xJ4fPtS7VcLwD"
+    ]
+    
+    fake_code = random.choice(gift_codes)
+    rickroll_url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+    
+    embed = discord.Embed(
+        title="You've been gifted a subscription!",
+        description=(
+            "🎮 **Discord Nitro Classic** (1 Month)\n\n"
+            f"[`https://discord.gift/{fake_code}`]({rickroll_url})"
+        ),
+        color=0x2F3136  # Discord's dark theme color
+    )
+    
+    embed.set_thumbnail(url="https://i.imgur.com/w9aiD6F.png")  # Discord Nitro logo
+    
+    # Random expiry time between 23-48 hours
+    expires_in = random.randint(23, 48)
+    embed.set_footer(text=f"Expires in {expires_in} hours")
+
+    await interaction.response.send_message(embed=embed)
 
 # Run the bot
 bot.run(TOKEN) 

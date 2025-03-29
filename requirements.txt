@@ -3,4 +3,11 @@ python-dotenv>=1.0.0
 requests>=2.31.0
 google-generativeai>=0.3.2
 fpdf>=1.7.2
-supabase>=2.3.4 
+supabase>=2.3.4
+Pillow>=10.2.0
+python-docx
+pypdf>=3.7.1
+markdown>=3.3.7
+html2text>=2020.1.16
+mammoth>=1.6.0
+reportlab>=4.1.0 

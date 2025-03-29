@@ -1,117 +1,52 @@
-Private Info Bot Commands
-========================
+Bot Commands List
+================
 
-General Commands:
+⚙️ Utility Commands
+------------------
+/help       - Show all available commands
+/ping       - Check bot's latency
+/prefix     - Change bot prefix
+/settings   - View/edit bot settings
+/adduser    - Add allowed user
+/removeuser - Remove allowed user
+
+🎬 Media Commands
 ---------------
-/hello      - Get a greeting from the bot
-/status     - Check bot status and latency
-/note       - Save a private note
-             Usage: /note [your note content]
-/viewnotes  - View all saved notes
-/valoinfo   - Get Valorant player information
-             Usage: /valoinfo <name> <tag>
-             Shows: Account info, rank, match history
-/mcserverstatus - Check Minecraft server status
-               Shows: Detailed server information for both Java & Bedrock editions
-               Features:
-               - Server status and version
-               - Player count and online players list
-               - MOTD (Message of the Day)
-               - SRV record detection
-               - Auto port detection
-               Usage: 
-               1. Enter server IP/address
-               2. Optional: Specify port number
-               Note: Data is cached for 1 minute
-/geminichat   - Start a chat session with Gemini AI
-                Features:
-                - Natural conversation
-                - Image analysis
-                - Chat history
-                Usage: Type messages to chat with Gemini
-/geminichatend - End Gemini chat session
-                Options:
-                - Download chat history as PDF
-                - Delete entire chat
-/dcsearch - Search for Discord user information
-             Features:
-             - Search by User ID (recommended) or username
-             - Shows basic info:
-               • Username
-               • User ID
-               • Account creation date
-               • Bot status
-             - Shows profile details:
-               • Avatar with URL
-               • Banner (if any)
-               • Badges and flags
-               • Accent color
-             - Server-specific info (if user is in server):
-               • Online status with emoji
-               • Current activities
-               • Server roles
-               • Server join date
-             Usage: 
-             1. Use /dcsearch
-             2. Enter User ID or username in modal
-             Note: Using User ID gives more reliable results
+/ytdownload - Download YouTube videos/audio
+  • Supports timestamps (e.g., 1:30-2:45)
+  • Auto-uploads large videos to Telegram
+  • Supports MP4/MP3/Thumbnail download
+/movie     - Search for movies and streaming links
+/meme      - Create custom memes from templates
 
-+/triggercreate - Create auto-responder triggers
-+                Features:
-+                - Create custom word/phrase triggers
-+                - Set custom response messages
-+                Usage:
-+                1. Use /triggercreate
-+                2. Enter trigger word/phrase
-+                3. Enter response message
-+
-+/triggerlist - Manage auto-responder triggers
-+              Features:
-+              - View all triggers (5 per page)
-+              - Navigate with Previous/Next buttons
-+              - Delete triggers by number
-+              - Edit existing triggers
-+              Usage:
-+              - Use /triggerlist to view and manage triggers
-+              - Use buttons to navigate pages
-+              - Use Delete/Edit buttons to modify triggers
+🤖 AI & Generation
+----------------
+/imagine   - Generate images from text
+/gemini    - Chat with Google's Gemini AI
 
-Settings Management (Owner Only):
-------------------------------
-/settings   - Open the settings management menu
-             Features:
-             1️⃣ Change Bot Prefix
-             2️⃣ Manage Allowed Users (Add/Remove)
-             3️⃣ Change Status Message
-             4️⃣ Change Embed Color
-             5️⃣ Set Gemini API Key
-             ❌ Close Settings Menu
+📝 Notes & Triggers
+-----------------
+/note      - Create/manage notes
+/trigger   - Create/manage auto-responses
+/blacklist - Manage blacklisted words
 
-Settings Menu Options:
+🎮 Gaming
+--------
+/valorant  - Get Valorant player stats
+/valstats  - Detailed Valorant statistics
+
+🎭 Fake Hacker Commands
 --------------------
-1. Change Prefix:
-   - Change the bot's command prefix
-   - Current default: /
+/hack      - Fake a hacking animation on someone
+/ip        - Pretend to "find" someone's IP (joke command)
 
-2. Manage Allowed Users:
-   - Add or remove users who can access the bot
-   - Cannot remove the owner (ID: 709230564913446952)
-   - Enter user ID to add/remove users
+Additional Features:
+------------------
+• All commands are private (require permissions)
+• YouTube downloads auto-upload to Telegram if file is large
+• Gemini chat supports image analysis and chat history
+• Notes and triggers are stored persistently
+• Settings can only be modified by the bot owner
 
-3. Change Status Message:
-   - Change the bot's playing status
-   - Current default: "Serving Shiraken12T"
-
-4. Change Embed Color:
-   - Customize the color of bot embeds
-   - Use hex format (e.g., 0x3498db)
-
-Notes:
------
-- All commands are private and can only be used by allowed users
-- Settings can only be modified by the bot owner
-- The bot will automatically reject commands from unauthorized users
-- User IDs are required for adding/removing allowed users
-- All notes are stored privately and can only be accessed by allowed users 
-
-python bot.py 
+Note: All commands are implemented as slash commands (/).
+Use /help for a quick overview of available commands. 
